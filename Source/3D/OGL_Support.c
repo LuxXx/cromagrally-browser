@@ -18,6 +18,28 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+
+// Yield to the browser until it's ready for the next frame, so it can present
+// what we just drew (and process input) in step with the display's refresh rate.
+// Yielding with setTimeout instead (emscripten_sleep) starves the compositor:
+// most frames get drawn but never shown.
+// (Hidden tabs get no animation frames, so fall back to a timer there.)
+// Module.frameStats keeps track of how much time each frame spends in the game.
+EM_ASYNC_JS(void, WebYieldUntilNextFrame, (void), {
+	var st = Module.frameStats || (Module.frameStats = { frames: 0, workMs: 0, maxWorkMs: 0, resumedAt: 0 });
+	var now = performance.now();
+	if (st.resumedAt) {
+		var work = now - st.resumedAt;
+		st.frames++;
+		st.workMs += work;
+		if (work > st.maxWorkMs) st.maxWorkMs = work;
+	}
+	await new Promise(function(resolve) {
+		if (document.hidden) setTimeout(resolve, 16);
+		else requestAnimationFrame(resolve);
+	});
+	st.resumedAt = performance.now();
+});
 #endif
 
 extern SDL_Window*		gSDLWindow;
@@ -668,8 +690,7 @@ void OGL_DrawScene(void (*drawRoutine)(void))
 	SDL_GL_SwapWindow(gSDLWindow);					// end render loop
 
 #ifdef __EMSCRIPTEN__
-	// Yield to the browser so it can present the frame and process events.
-	emscripten_sleep(0);
+	WebYieldUntilNextFrame();
 #endif
 }
 
@@ -937,7 +958,7 @@ static void OGL_FixTextureGamma(uint8_t* imageMemory, int width, int height, GLi
 /***************** CONVERT PIXELS TO RGBA8 (WEBGL) **************************/
 
 static uint8_t* OGL_ConvertPixelsToRGBA8(const void* pixels, int width, int height,
-		GLint format, GLint type, bool forceOpaque)
+		GLint format, GLint type, bool forceOpaque, bool oneBitAlpha)
 {
 	uint8_t* out = (uint8_t*) AllocPtr((long) width * height * 4);
 	GAME_ASSERT(out);
@@ -979,7 +1000,11 @@ static uint8_t* OGL_ConvertPixelsToRGBA8(const void* pixels, int width, int heig
 		o[0] = r;
 		o[1] = g;
 		o[2] = b;
-		o[3] = forceOpaque ? 0xFF : a;
+		if (forceOpaque)
+			a = 0xFF;
+		else if (oneBitAlpha)
+			a = (a >= 0x80) ? 0xFF : 0x00;
+		o[3] = a;
 	}
 
 	return out;
@@ -996,6 +1021,9 @@ static uint8_t* OGL_ConvertPixelsToRGBA8(const void* pixels, int width, int heig
 bool					gWebTexture2DEnabled = false;
 static GLfloat			gWebCurrentColor[4] = {1, 1, 1, 1};
 static bool				gWebInBeginEnd = false;
+static GLint			gWebBlendSrc = GL_ONE;
+static GLint			gWebBlendDst = GL_ZERO;
+static GLboolean		gWebDepthMask = GL_TRUE;
 
 #define MAX_WEB_CAPS 32
 static GLenum			gWebCapNames[MAX_WEB_CAPS];
@@ -1076,6 +1104,37 @@ void WebGL_End(void)
 	(glColor4f)(gWebCurrentColor[0], gWebCurrentColor[1], gWebCurrentColor[2], gWebCurrentColor[3]);
 }
 
+void WebGL_BlendFunc(GLenum sfactor, GLenum dfactor)
+{
+	gWebBlendSrc = sfactor;
+	gWebBlendDst = dfactor;
+	(glBlendFunc)(sfactor, dfactor);
+}
+
+void WebGL_DepthMask(GLboolean flag)
+{
+	gWebDepthMask = flag;
+	(glDepthMask)(flag);
+}
+
+void WebGL_GetIntegerv(GLenum pname, GLint* params)
+{
+	if (pname == GL_BLEND_SRC)
+		*params = gWebBlendSrc;
+	else if (pname == GL_BLEND_DST)
+		*params = gWebBlendDst;
+	else
+		(glGetIntegerv)(pname, params);
+}
+
+void WebGL_GetBooleanv(GLenum pname, GLboolean* params)
+{
+	if (pname == GL_DEPTH_WRITEMASK)
+		*params = gWebDepthMask;
+	else
+		(glGetBooleanv)(pname, params);
+}
+
 void WebGL_EmitVertexColor(void)
 {
 	(glColor4f)(gWebCurrentColor[0], gWebCurrentColor[1], gWebCurrentColor[2], gWebCurrentColor[3]);
@@ -1122,7 +1181,11 @@ GLuint	textureName;
 #ifdef __EMSCRIPTEN__
 	// WebGL only accepts a few format/type combos and needs internalFormat == format.
 	// It has no GL_BGRA or packed *_REV types, so convert everything to RGBA8.
-	uint8_t* rgba = OGL_ConvertPixelsToRGBA8(imageMemory, width, height, srcFormat, dataType, destFormat == GL_RGB);
+	// Keep the alpha quantization that the requested internal format would apply:
+	// the game relies on GL_RGB5_A1 making edge pixels fully opaque or transparent
+	// for its glAlphaFunc(GL_EQUAL, 1) cutouts (e.g. the POW items).
+	uint8_t* rgba = OGL_ConvertPixelsToRGBA8(imageMemory, width, height, srcFormat, dataType,
+			destFormat == GL_RGB, destFormat == GL_RGB5_A1);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 	SafeDisposePtr((Ptr) rgba);
 #else

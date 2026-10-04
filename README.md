@@ -16,8 +16,11 @@ against SDL3 and WebGL, with small web-specific changes under `#ifdef __EMSCRIPT
   - `GL_COLOR_MATERIAL` is patched into the emulated lighting shader (`web/patch_glemu.py`);
   - enable flags and the current color are tracked in C for `glIsEnabled`/`glGetFloatv`,
     and `glBegin`/`glEnd` vertices always carry a color (`Source/Headers/webgl_compat.h`);
+  - `glGetError` and the state queries in `OGL_PushState` are answered from shadowed state instead of
+    WebGL (each WebGL readback stalls on the GPU process; this took races from ~15 fps to 60 fps);
+  - textures requested as `GL_RGB5_A1` get 1-bit alpha, which the item sprites' `GL_EQUAL` alpha cutouts rely on;
   - GL emulation is initialized after SDL creates its WebGL context.
-- **Game loop:** the game's blocking loops run as-is thanks to `ASYNCIFY`; each frame yields to the browser after presenting.
+- **Game loop:** the game's blocking loops run as-is thanks to `ASYNCIFY`; each frame waits for `requestAnimationFrame`, so it's in step with the display.
 - **Saves:** prefs, progress and race times are kept in IndexedDB (`IDBFS`) and persist across visits.
 - **Assets:** game data is split into packages below Cloudflare's 25 MiB per-file limit and cached in IndexedDB after the first visit.
 - **Multiplayer:** local split-screen works (with gamepads); network play doesn't exist in the browser.

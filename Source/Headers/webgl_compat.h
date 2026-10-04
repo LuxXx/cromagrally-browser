@@ -8,6 +8,11 @@
 // The emulation also textures any geometry that carries texcoords, regardless
 // of GL_TEXTURE_2D. So, drop texcoords while texturing is disabled.
 //
+// Reading state back from WebGL (glGetError, glGetIntegerv...) stalls until the
+// GPU process answers, and the game does it after nearly every draw call, which
+// made it run at a fraction of the frame rate. So, don't check for errors, and
+// answer the state queries the game makes from our own copy.
+//
 // Between glBegin/glEnd, the emulation writes each glColor call straight into
 // the interleaved vertex stream, so the stream gets misaligned unless every
 // vertex has its own color. So, re-send the current color before each vertex.
@@ -27,6 +32,10 @@ void			WebGL_Hint(GLenum target, GLenum mode);
 void			WebGL_Begin(GLenum mode);
 void			WebGL_End(void);
 void			WebGL_EmitVertexColor(void);
+void			WebGL_BlendFunc(GLenum sfactor, GLenum dfactor);
+void			WebGL_DepthMask(GLboolean flag);
+void			WebGL_GetIntegerv(GLenum pname, GLint* params);
+void			WebGL_GetBooleanv(GLenum pname, GLboolean* params);
 
 #define glEnable(cap)					WebGL_Enable(cap)
 #define glDisable(cap)					WebGL_Disable(cap)
@@ -36,7 +45,11 @@ void			WebGL_EmitVertexColor(void);
 #define glColor3f(r, g, b)				WebGL_Color4f(r, g, b, 1.0f)
 #define glColor4fv(v)					WebGL_Color4f((v)[0], (v)[1], (v)[2], (v)[3])
 #define glHint(target, mode)			WebGL_Hint(target, mode)
-#define glGetIntegerv(pname, params)	(glGetIntegerv)((pname) == GL_BLEND_SRC ? GL_BLEND_SRC_RGB : (pname) == GL_BLEND_DST ? GL_BLEND_DST_RGB : (pname), params)
+#define glGetError()					((GLenum) GL_NO_ERROR)
+#define glBlendFunc(sfactor, dfactor)	WebGL_BlendFunc(sfactor, dfactor)
+#define glDepthMask(flag)				WebGL_DepthMask(flag)
+#define glGetIntegerv(pname, params)	WebGL_GetIntegerv(pname, params)
+#define glGetBooleanv(pname, params)	WebGL_GetBooleanv(pname, params)
 #define glTexCoord2f(u, v)				(gWebTexture2DEnabled ? (glTexCoord2f)(u, v) : (void) 0)
 #define glBegin(mode)					WebGL_Begin(mode)
 #define glEnd()							WebGL_End()

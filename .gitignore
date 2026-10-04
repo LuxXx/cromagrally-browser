@@ -11,6 +11,7 @@ dist/
 
 # Web build
 build-web/
+build-prof/
 dist/
 node_modules/
 .wrangler/

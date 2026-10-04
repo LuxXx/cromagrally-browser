@@ -12,6 +12,10 @@ path = sys.argv[1]
 s = open(path, encoding="utf-8").read()
 
 replacements = [
+    # Cro-Mag Rally clips sprite edges with glAlphaFunc(GL_EQUAL, 1). An exact
+    # float compare fails on some GPUs' fragment precision, so allow a hair of slack.
+    ("if (!(gl_FragColor.a == u_alphaTestRef)) { discard; }",
+     "if (abs(gl_FragColor.a - u_alphaTestRef) > 0.5/255.0) { discard; }"),
     ("v_color.w = u_materialDiffuse.w;", "v_color.w = a_color.w;"),
     ("u_lightModelAmbient.xyz * u_materialAmbient.xyz;", "u_lightModelAmbient.xyz * a_color.xyz;"),
     (".xyz * u_materialAmbient.xyz;", ".xyz * a_color.xyz;"),
