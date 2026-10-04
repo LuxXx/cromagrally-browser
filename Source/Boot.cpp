@@ -9,6 +9,10 @@
 #include "PommeInit.h"
 #include "PommeFiles.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 extern "C"
 {
 	#include "game.h"
@@ -239,6 +243,11 @@ int main(int argc, char** argv)
 		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Uncaught exception: %s", uncaught.c_str());
 		SDL_ShowSimpleMessageBox(0, GAME_FULL_NAME, uncaught.c_str(), nullptr);
 	}
+
+#ifdef __EMSCRIPTEN__
+	// Let the web page know the game has exited (e.g. "Quit" in the main menu)
+	EM_ASM({ if (Module.onGameExit) Module.onGameExit(); });
+#endif
 
 	return success ? 0 : 1;
 }

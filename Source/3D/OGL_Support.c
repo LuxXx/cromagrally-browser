@@ -16,6 +16,10 @@
 #include <SDL3/SDL_opengl.h>
 #include <math.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 extern SDL_Window*		gSDLWindow;
 //extern	GWorldPtr		gTerrainDebugGWorld;
 
@@ -361,6 +365,15 @@ static void OGL_CreateDrawContext(void)
 	bool didMakeCurrent = SDL_GL_MakeCurrent(gSDLWindow, gAGLContext);
 	GAME_ASSERT_MESSAGE(didMakeCurrent, SDL_GetError());
 
+#ifdef __EMSCRIPTEN__
+	// Emscripten's GL emulation initializes itself from Browser.createContext,
+	// but SDL3 creates its context via the html5 API, which skips that hook.
+	EM_ASM({
+		Browser.useWebGL = true;
+		Browser.moduleContextCreatedCallbacks.forEach(function(cb) { cb(); });
+	});
+#endif
+
 
 #if 0
 			/* GET OPENGL EXTENSIONS */
@@ -398,10 +411,12 @@ static void OGL_InitDrawContext(void)
 
 	glEnable(GL_DEPTH_TEST);								// use z-buffer
 
+#ifndef __EMSCRIPTEN__	// GL emulation can't set GL_AMBIENT_AND_DIFFUSE; its patched shader takes both from the vertex color (see web/patch_glemu.py)
 	{
 		GLfloat	color[] = {1,1,1,1};									// set global material color to white
 		glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, color);
 	}
+#endif
 
 	glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
 	glEnable(GL_COLOR_MATERIAL);
@@ -635,10 +650,12 @@ void OGL_DrawScene(void (*drawRoutine)(void))
 		if (++gDebugMode > 3)
 			gDebugMode = 0;
 
+#ifndef __EMSCRIPTEN__									// WebGL has no wireframe mode
 		if (gDebugMode == 3)								// see if show wireframe
 			glPolygonMode(GL_FRONT_AND_BACK ,GL_LINE);
 		else
 			glPolygonMode(GL_FRONT_AND_BACK ,GL_FILL);
+#endif
 	}
 
 
@@ -649,6 +666,11 @@ void OGL_DrawScene(void (*drawRoutine)(void))
            /* SWAP THE BUFFS */
 
 	SDL_GL_SwapWindow(gSDLWindow);					// end render loop
+
+#ifdef __EMSCRIPTEN__
+	// Yield to the browser so it can present the frame and process events.
+	emscripten_sleep(0);
+#endif
 }
 
 
@@ -911,6 +933,161 @@ static void OGL_FixTextureGamma(uint8_t* imageMemory, int width, int height, GLi
 }
 
 
+#ifdef __EMSCRIPTEN__
+/***************** CONVERT PIXELS TO RGBA8 (WEBGL) **************************/
+
+static uint8_t* OGL_ConvertPixelsToRGBA8(const void* pixels, int width, int height,
+		GLint format, GLint type, bool forceOpaque)
+{
+	uint8_t* out = (uint8_t*) AllocPtr((long) width * height * 4);
+	GAME_ASSERT(out);
+	uint8_t* o = out;
+
+	for (int i = 0; i < width * height; i++, o += 4)
+	{
+		uint8_t r, g, b, a = 0xFF;
+
+		if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV)				// format is BGRA
+		{
+			uint16_t px = ((const uint16_t*) pixels)[i];
+			r = ((px >> 10) & 0x1F) * 255 / 31;
+			g = ((px >>  5) & 0x1F) * 255 / 31;
+			b = ((px >>  0) & 0x1F) * 255 / 31;
+			a = (px & 0x8000) ? 0xFF : 0x00;
+		}
+		else if (format == GL_BGRA)								// GL_UNSIGNED_INT_8_8_8_8_REV or GL_UNSIGNED_BYTE (B,G,R,A in memory)
+		{
+			const uint8_t* p = (const uint8_t*) pixels + i * 4;
+			b = p[0]; g = p[1]; r = p[2]; a = p[3];
+		}
+		else if (format == GL_BGR)
+		{
+			const uint8_t* p = (const uint8_t*) pixels + i * 3;
+			b = p[0]; g = p[1]; r = p[2];
+		}
+		else if (format == GL_RGB)
+		{
+			const uint8_t* p = (const uint8_t*) pixels + i * 3;
+			r = p[0]; g = p[1]; b = p[2];
+		}
+		else													// GL_RGBA, GL_UNSIGNED_BYTE
+		{
+			const uint8_t* p = (const uint8_t*) pixels + i * 4;
+			r = p[0]; g = p[1]; b = p[2]; a = p[3];
+		}
+
+		o[0] = r;
+		o[1] = g;
+		o[2] = b;
+		o[3] = forceOpaque ? 0xFF : a;
+	}
+
+	return out;
+}
+#endif
+
+#ifdef __EMSCRIPTEN__
+/***************** WEBGL STATE SHADOWING **************************/
+//
+// See webgl_compat.h. Note the parentheses around the real GL function names,
+// which keep the macros in webgl_compat.h from expanding.
+//
+
+bool					gWebTexture2DEnabled = false;
+static GLfloat			gWebCurrentColor[4] = {1, 1, 1, 1};
+static bool				gWebInBeginEnd = false;
+
+#define MAX_WEB_CAPS 32
+static GLenum			gWebCapNames[MAX_WEB_CAPS];
+static bool				gWebCapValues[MAX_WEB_CAPS];
+static int				gWebNumCaps = 0;
+
+static void WebGL_SetCap(GLenum cap, bool value)
+{
+	if (cap == GL_TEXTURE_2D)
+		gWebTexture2DEnabled = value;
+
+	for (int i = 0; i < gWebNumCaps; i++)
+	{
+		if (gWebCapNames[i] == cap)
+		{
+			gWebCapValues[i] = value;
+			return;
+		}
+	}
+
+	GAME_ASSERT(gWebNumCaps < MAX_WEB_CAPS);
+	gWebCapNames[gWebNumCaps] = cap;
+	gWebCapValues[gWebNumCaps] = value;
+	gWebNumCaps++;
+}
+
+void WebGL_Enable(GLenum cap)
+{
+	WebGL_SetCap(cap, true);
+	(glEnable)(cap);
+}
+
+void WebGL_Disable(GLenum cap)
+{
+	WebGL_SetCap(cap, false);
+	(glDisable)(cap);
+}
+
+GLboolean WebGL_IsEnabled(GLenum cap)
+{
+	for (int i = 0; i < gWebNumCaps; i++)
+	{
+		if (gWebCapNames[i] == cap)
+			return gWebCapValues[i];
+	}
+	return cap == GL_DITHER || cap == GL_MULTISAMPLE;		// GL defaults
+}
+
+void WebGL_GetFloatv(GLenum pname, GLfloat* params)
+{
+	if (pname == GL_CURRENT_COLOR)
+		SDL_memcpy(params, gWebCurrentColor, sizeof(gWebCurrentColor));
+	else
+		(glGetFloatv)(pname, params);
+}
+
+void WebGL_Color4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+{
+	gWebCurrentColor[0] = r;
+	gWebCurrentColor[1] = g;
+	gWebCurrentColor[2] = b;
+	gWebCurrentColor[3] = a;
+
+	if (!gWebInBeginEnd)							// within glBegin/glEnd, sent with each vertex instead
+		(glColor4f)(r, g, b, a);
+}
+
+void WebGL_Begin(GLenum mode)
+{
+	gWebInBeginEnd = true;
+	(glBegin)(mode);
+}
+
+void WebGL_End(void)
+{
+	(glEnd)();
+	gWebInBeginEnd = false;
+	(glColor4f)(gWebCurrentColor[0], gWebCurrentColor[1], gWebCurrentColor[2], gWebCurrentColor[3]);
+}
+
+void WebGL_EmitVertexColor(void)
+{
+	(glColor4f)(gWebCurrentColor[0], gWebCurrentColor[1], gWebCurrentColor[2], gWebCurrentColor[3]);
+}
+
+void WebGL_Hint(GLenum target, GLenum mode)
+{
+	if (target == GL_GENERATE_MIPMAP_HINT)			// the only hint WebGL knows about
+		(glHint)(target, mode);
+}
+#endif
+
 /***************** OGL TEXTUREMAP LOAD **************************/
 
 GLuint OGL_TextureMap_Load(void *imageMemory, int width, int height,
@@ -942,6 +1119,13 @@ GLuint	textureName;
 		OGL_FixTextureGamma(imageMemory, width, height, srcFormat, dataType);
 	}
 
+#ifdef __EMSCRIPTEN__
+	// WebGL only accepts a few format/type combos and needs internalFormat == format.
+	// It has no GL_BGRA or packed *_REV types, so convert everything to RGBA8.
+	uint8_t* rgba = OGL_ConvertPixelsToRGBA8(imageMemory, width, height, srcFormat, dataType, destFormat == GL_RGB);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+	SafeDisposePtr((Ptr) rgba);
+#else
 	glTexImage2D(GL_TEXTURE_2D,
 				0,										// mipmap level
 				destFormat,								// format in OpenGL
@@ -951,6 +1135,7 @@ GLuint	textureName;
 				srcFormat,								// what my format is
 				dataType,								// size of each r,g,b
 				imageMemory);							// pointer to the actual texture pixels
+#endif
 
 
 			/* SEE IF RAN OUT OF MEMORY WHILE COPYING TO OPENGL */

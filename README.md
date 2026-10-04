@@ -1,3 +1,43 @@
+# Cro-Mag Rally in the browser
+
+**Play it at https://cromagrally.tdbr.de**
+
+This is a WebAssembly port of [Iliyas Jorio's modern Cro-Mag Rally port](https://github.com/jorio/CroMagRally)
+(the 2000 Pangea Software game). The original C game code is compiled with [Emscripten](https://emscripten.org)
+against SDL3 and WebGL, with small web-specific changes under `#ifdef __EMSCRIPTEN__`.
+
+### How the web port works
+
+- **Compiler:** Emscripten, using its SDL3 port for windowing, input, gamepads and audio.
+- **Graphics:** the game uses fixed-function OpenGL (lighting, fog, alpha test, `glBegin`). It runs on top of
+  Emscripten's `LEGACY_GL_EMULATION`, with a few fixes:
+  - textures are converted to RGBA8 on upload (WebGL has no BGRA / packed 1-5-5-5 formats);
+  - vertex arrays are interleaved and indices narrowed to 16-bit at draw time;
+  - `GL_COLOR_MATERIAL` is patched into the emulated lighting shader (`web/patch_glemu.py`);
+  - enable flags and the current color are tracked in C for `glIsEnabled`/`glGetFloatv`,
+    and `glBegin`/`glEnd` vertices always carry a color (`Source/Headers/webgl_compat.h`);
+  - GL emulation is initialized after SDL creates its WebGL context.
+- **Game loop:** the game's blocking loops run as-is thanks to `ASYNCIFY`; each frame yields to the browser after presenting.
+- **Saves:** prefs, progress and race times are kept in IndexedDB (`IDBFS`) and persist across visits.
+- **Assets:** game data is split into packages below Cloudflare's 25 MiB per-file limit and cached in IndexedDB after the first visit.
+- **Multiplayer:** local split-screen works (with gamepads); network play doesn't exist in the browser.
+
+### Building the web version
+
+```sh
+# Install & activate the Emscripten SDK (https://emscripten.org/docs/getting_started/downloads.html)
+source /path/to/emsdk/emsdk_env.sh
+
+./web/build.sh              # outputs a static site to dist/
+python3 -m http.server -d dist 8000   # test locally at http://localhost:8000
+
+npx wrangler deploy         # deploy dist/ to Cloudflare (see wrangler.toml)
+```
+
+Web-specific files live in `web/`. Licensing is unchanged: CC BY-NC-SA 4.0 (see LICENSE.md).
+
+---
+
 # Cro-Mag Rally
 
 ## *The wildest racing game since man invented the wheel!*

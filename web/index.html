@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cro-Mag Rally</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { --bg: #170e07; --fg: #f4e6d0; --accent: #f0962a; --muted: #a8927a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block;
+    background: #000; outline: none; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 16px; text-align: center;
+    background: radial-gradient(ellipse at center, #3a2210 0%, var(--bg) 70%); z-index: 10; }
+  #overlay img { width: 96px; height: 96px; image-rendering: auto; }
+  h1 { margin: 0; font-size: 34px; letter-spacing: .04em; }
+  #status { color: var(--muted); min-height: 1.5em; }
+  #bar { width: min(360px, 80vw); height: 8px; border-radius: 4px; background: #3a2a1c; overflow: hidden; }
+  #bar > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  #play { display: none; font: inherit; font-size: 18px; font-weight: 600; padding: 12px 34px;
+    border: 0; border-radius: 8px; background: var(--accent); color: #2a1404; cursor: pointer; }
+  #play:hover { filter: brightness(1.1); }
+  .help { color: var(--muted); font-size: 13px; max-width: 480px; }
+  .help kbd { background: #3a2a1c; border-radius: 4px; padding: 1px 6px; color: var(--fg); }
+  .credits { position: fixed; bottom: 10px; left: 0; right: 0; font-size: 12px; color: var(--muted); }
+  .credits a { color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+
+<div id="overlay">
+  <img src="icon.png" alt="">
+  <h1>Cro-Mag Rally</h1>
+  <div id="status">Loading…</div>
+  <div id="bar"><div></div></div>
+  <button id="play">Play</button>
+  <div class="help">
+    Drive: <kbd>Arrow keys</kbd> / <kbd>WASD</kbd> · Brake: <kbd>Space</kbd> ·
+    Throw weapon: <kbd>Ctrl</kbd> (forward) / <kbd>Alt</kbd> (backward) · Rear view: <kbd>Shift</kbd> ·
+    Camera: <kbd>Enter</kbd> · Pause: <kbd>Esc</kbd>. Gamepads work too.
+    Your progress is saved in this browser.
+  </div>
+  <div class="credits">
+    Cro-Mag Rally © 2000 Pangea Software · Modern port by <a href="https://github.com/jorio/CroMagRally" target="_blank" rel="noopener">Iliyas Jorio</a> ·
+    Browser port via WebAssembly · <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>
+  </div>
+</div>
+
+<script>
+  var overlay = document.getElementById('overlay');
+  var statusEl = document.getElementById('status');
+  var barEl = document.querySelector('#bar > div');
+  var playBtn = document.getElementById('play');
+  var canvas = document.getElementById('canvas');
+  var buildVersion = '';
+
+  var Module = {
+    canvas: canvas,
+    noInitialRun: true,
+    locateFile: function (path) { return path + '?v=' + buildVersion; },
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.warn(t); },
+    setStatus: function (text) {
+      if (!text) return;
+      var m = text.match(/\((\d+(?:\.\d+)?)\/(\d+)\)/);
+      if (m) {
+        barEl.style.width = (100 * m[1] / m[2]).toFixed(1) + '%';
+        statusEl.textContent = 'Downloading game data… ' + (m[1] / 1048576).toFixed(0) + ' / ' + (m[2] / 1048576).toFixed(0) + ' MB';
+      } else {
+        statusEl.textContent = text;
+      }
+    },
+    onRuntimeInitialized: function () {
+      barEl.style.width = '100%';
+      statusEl.textContent = 'Ready!';
+      playBtn.style.display = 'block';
+      playBtn.focus();
+    },
+    onGameExit: function () {
+      // The player chose "Quit": go back to the start screen.
+      window.removeEventListener('beforeunload', confirmLeave);
+      location.reload();
+    },
+    onAbort: function (what) {
+      window.removeEventListener('beforeunload', confirmLeave);
+      statusEl.textContent = 'The game crashed: ' + what;
+      overlay.style.display = 'flex';
+    }
+  };
+
+  function confirmLeave(e) { e.preventDefault(); e.returnValue = ''; }
+
+  playBtn.addEventListener('click', function () {
+    overlay.style.display = 'none';
+    canvas.focus();
+    // Ctrl is a game key, so Ctrl+W (steer + throw) would close the tab mid-race.
+    window.addEventListener('beforeunload', confirmLeave);
+    try { Module.callMain([]); } catch (e) { if (e !== 'unwind') throw e; }
+  });
+
+  window.addEventListener('error', function (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  });
+
+  // Load the data packages listed in the manifest, then the game itself.
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src; s.onload = resolve; s.onerror = function () { reject(new Error('Failed to load ' + src)); };
+      document.body.appendChild(s);
+    });
+  }
+  fetch('data-manifest.json', { cache: 'no-cache' }).then(function (r) { return r.json(); }).then(function (manifest) {
+    buildVersion = manifest.version;
+    return manifest.scripts.reduce(function (p, src) {
+      return p.then(function () { return loadScript(src + '?v=' + buildVersion); });
+    }, Promise.resolve()).then(function () { return loadScript('CroMagRally.js?v=' + buildVersion); });
+  }).catch(function (e) { statusEl.textContent = e.message; });
+</script>
+</body>
+</html>

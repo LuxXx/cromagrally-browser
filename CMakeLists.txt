@@ -78,7 +78,13 @@ if(NOT DEFINED SDL3_DIR)
 	unset(_sdl3_maybe)
 endif()
 
-if(NOT BUILD_SDL_FROM_SOURCE)
+if(EMSCRIPTEN)
+	# Emscripten provides SDL3 as a built-in port
+	add_library(SDL3::SDL3 INTERFACE IMPORTED)
+	target_compile_options(SDL3::SDL3 INTERFACE "--use-port=sdl3")
+	target_link_options(SDL3::SDL3 INTERFACE "--use-port=sdl3")
+	message("Using Emscripten SDL3 port")
+elseif(NOT BUILD_SDL_FROM_SOURCE)
 	find_package(SDL3 CONFIG REQUIRED)
 	message("Found pre-built SDL3")
 else()
@@ -95,7 +101,9 @@ endif()
 
 add_subdirectory(extern/Pomme)
 
-find_package(OpenGL REQUIRED)
+if(NOT EMSCRIPTEN)
+	find_package(OpenGL REQUIRED)
+endif()
 
 #------------------------------------------------------------------------------
 # EXECUTABLE TARGET
@@ -212,7 +220,12 @@ else()
 endif()
 
 # Link core dependencies
-target_link_libraries(${GAME_TARGET} PRIVATE Pomme OpenGL::GL)
+if(EMSCRIPTEN)
+	target_link_libraries(${GAME_TARGET} PRIVATE Pomme)
+	include(${CMAKE_SOURCE_DIR}/web/emscripten.cmake)
+else()
+	target_link_libraries(${GAME_TARGET} PRIVATE Pomme OpenGL::GL)
+endif()
 
 # Add required frameworks for KillMacMouseAcceleration
 if(APPLE)

@@ -557,11 +557,102 @@ int	numChildren,i;
 }
 
 
+#ifdef __EMSCRIPTEN__
+/******************** DRAW ELEMENTS (WEBGL) *************************/
+//
+// Emscripten's GL emulation only handles client-side vertex arrays reliably
+// when they're interleaved (one base pointer + stride), and only accepts
+// GL_UNSIGNED_SHORT indices. The game keeps separate arrays for positions,
+// normals, colors and UVs, with 32-bit indices. So, record the pointers the
+// game submits, then pack everything into one interleaved buffer at draw time.
+//
+
+static const float*		gWebVertexSrc = NULL;		// 3 floats per vertex
+static const float*		gWebNormalSrc = NULL;		// 3 floats per vertex
+static const void*		gWebColorSrc = NULL;		// 4 floats or 4 bytes per vertex
+static bool				gWebColorIsByte = false;
+static const float*		gWebUVSrc = NULL;			// 2 floats per vertex
+static bool				gWebUseNormals, gWebUseColors, gWebUseUVs;
+
+#define glVertexPointer(size, type, stride, ptr)	(gWebVertexSrc = (const float*) (ptr))
+#define glNormalPointer(type, stride, ptr)			(gWebNormalSrc = (const float*) (ptr), gWebUseNormals = true)
+#define glColorPointer(size, type, stride, ptr)		(gWebColorSrc = (ptr), gWebColorIsByte = ((type) == GL_UNSIGNED_BYTE), gWebUseColors = true)
+#define glTexCoordPointer(size, type, stride, ptr)	(gWebUVSrc = (const float*) (ptr), gWebUseUVs = true)
+
+enum { kWebFloatsPerVertex = 3 + 3 + 4 + 2 };
+
+static void DrawTrianglesWeb(const MOVertexArrayData* data)
+{
+	static uint16_t* indices16 = NULL;
+	static int indexCapacity = 0;
+	static float* vertices = NULL;
+	static int vertexCapacity = 0;
+
+	int numPoints = data->numPoints;
+	int count = data->numTriangles * 3;
+	GAME_ASSERT(numPoints <= 65536);
+
+	if (count > indexCapacity)
+	{
+		indexCapacity = count * 2;
+		indices16 = (uint16_t*) SDL_realloc(indices16, indexCapacity * sizeof(uint16_t));
+		GAME_ASSERT(indices16);
+	}
+
+	if (numPoints > vertexCapacity)
+	{
+		vertexCapacity = numPoints * 2;
+		vertices = (float*) SDL_realloc(vertices, vertexCapacity * kWebFloatsPerVertex * sizeof(float));
+		GAME_ASSERT(vertices);
+	}
+
+	const uint32_t* indices32 = (const uint32_t*) data->triangles;
+	for (int i = 0; i < count; i++)
+		indices16[i] = (uint16_t) indices32[i];
+
+	float* out = vertices;
+	for (int v = 0; v < numPoints; v++, out += kWebFloatsPerVertex)
+	{
+		SDL_memcpy(out + 0, gWebVertexSrc + v*3, 3 * sizeof(float));
+		if (gWebUseNormals)
+			SDL_memcpy(out + 3, gWebNormalSrc + v*3, 3 * sizeof(float));
+		if (gWebUseColors)
+		{
+			if (gWebColorIsByte)
+			{
+				const uint8_t* c = (const uint8_t*) gWebColorSrc + v*4;
+				out[6] = c[0] * (1.0f/255.0f);
+				out[7] = c[1] * (1.0f/255.0f);
+				out[8] = c[2] * (1.0f/255.0f);
+				out[9] = c[3] * (1.0f/255.0f);
+			}
+			else
+				SDL_memcpy(out + 6, (const float*) gWebColorSrc + v*4, 4 * sizeof(float));
+		}
+		if (gWebUseUVs && gWebTexture2DEnabled)
+			SDL_memcpy(out + 10, gWebUVSrc + v*2, 2 * sizeof(float));
+	}
+
+	const GLsizei stride = kWebFloatsPerVertex * sizeof(float);
+	(glVertexPointer)(3, GL_FLOAT, stride, vertices + 0);
+	if (gWebUseNormals)	(glNormalPointer)(GL_FLOAT, stride, vertices + 3);
+	if (gWebUseColors)	(glColorPointer)(4, GL_FLOAT, stride, vertices + 6);
+	if (gWebUseUVs && gWebTexture2DEnabled)	(glTexCoordPointer)(2, GL_FLOAT, stride, vertices + 10);
+	else if (gWebUseUVs)					glDisableClientState(GL_TEXTURE_COORD_ARRAY);	// don't texture with a stale UV pointer
+
+	glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, indices16);
+}
+#endif
+
 /******************** MO: DRAW GEOMETRY - VERTEX ARRAY *************************/
 
 void MO_DrawGeometry_VertexArray(const MOVertexArrayData *data)
 {
 Boolean		useTexture = false;
+
+#ifdef __EMSCRIPTEN__
+	gWebUseNormals = gWebUseColors = gWebUseUVs = false;
+#endif
 
 			/**********************/
 			/* SETUP VERTEX ARRAY */
@@ -675,7 +766,11 @@ use_current:
 
 
 //	glLockArraysEXT(0, data->numPoints);
+#ifdef __EMSCRIPTEN__
+	DrawTrianglesWeb(data);
+#else
 	glDrawElements(GL_TRIANGLES,data->numTriangles*3,GL_UNSIGNED_INT,&data->triangles[0]);
+#endif
 	if (OGL_CheckError())
 		DoFatalAlert("MO_DrawGeometry_VertexArray: glDrawElements");
 //	glUnlockArraysEXT();

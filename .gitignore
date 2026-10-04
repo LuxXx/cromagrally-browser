@@ -8,3 +8,9 @@ dist/
 .vs/
 .DS_Store
 *.user
+
+# Web build
+build-web/
+dist/
+node_modules/
+.wrangler/

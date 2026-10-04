@@ -12,6 +12,10 @@
 
 #include "game.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 extern SDL_Window* gSDLWindow;
 
 /****************************/
@@ -310,6 +314,24 @@ void MoveToPreferredDisplay(void)
 
 void SetFullscreenMode(bool enforceDisplayPref)
 {
+#ifdef __EMSCRIPTEN__
+	// In the browser, use the Fullscreen API directly. Browsers reject this
+	// unless it happens during a user gesture, so failures are silently ignored.
+	(void) enforceDisplayPref;
+	EM_ASM({
+		try {
+			if ($0 && !document.fullscreenElement) {
+				var p = document.documentElement.requestFullscreen();
+				if (p && p.catch) p.catch(function() {});
+			} else if (!$0 && document.fullscreenElement) {
+				var p = document.exitFullscreen();
+				if (p && p.catch) p.catch(function() {});
+			}
+		} catch (e) {}
+	}, gGamePrefs.fullscreen);
+	return;
+#endif
+
 	if (!gGamePrefs.fullscreen)
 	{
 		SDL_SetWindowFullscreen(gSDLWindow, 0);

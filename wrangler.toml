@@ -1,0 +1,11 @@
+# Cloudflare Workers static-assets deployment of the browser build.
+# Build first with web/build.sh, then: npx wrangler deploy
+name = "cromagrally"
+compatibility_date = "2026-10-01"
+
+[assets]
+directory = "./dist"
+
+[[routes]]
+pattern = "cromagrally.tdbr.de"
+custom_domain = true
